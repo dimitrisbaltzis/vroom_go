@@ -205,6 +205,52 @@ func BenchmarkVROOM(b *testing.B) {
 	}
 }
 
+// BenchmarkVROOMFast benchmarks Stage 1 (uint64 residues) VROOM.
+func BenchmarkVROOMFast(b *testing.B) {
+	for _, bits := range []int{256, 512, 1024} {
+		b.Run(fmt.Sprintf("%d-bit", bits), func(b *testing.B) {
+			p, _ := rand.Prime(rand.Reader, bits)
+			params := SetupRNSParamsU64(p)
+			a := randomInRange(p)
+			bv := randomInRange(p)
+			aM, aN := ToVROOMEncodingFast(a, params)
+			bM, bN := ToVROOMEncodingFast(bv, params)
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				VROOMFast(aM, aN, bM, bN, params)
+			}
+		})
+	}
+}
+
+// TestVROOMFastCorrectness verifies Stage 1 gives same results as big.Int reference.
+func TestVROOMFastCorrectness(t *testing.T) {
+	for _, bits := range []int{64, 128, 256, 512, 1024} {
+		t.Run(fmt.Sprintf("%d-bit", bits), func(t *testing.T) {
+			p, _ := rand.Prime(rand.Reader, bits)
+			params := SetupRNSParamsU64(p)
+
+			for i := 0; i < 50; i++ {
+				a := randomInRange(p)
+				bv := randomInRange(p)
+
+				expected := new(big.Int).Mul(a, bv)
+				expected.Mod(expected, p)
+
+				aM, aN := ToVROOMEncodingFast(a, params)
+				bM, bN := ToVROOMEncodingFast(bv, params)
+				rM, _ := VROOMFast(aM, aN, bM, bN, params)
+				got := FromVROOMEncodingFast(rM, params)
+
+				if got.Cmp(expected) != 0 {
+					t.Fatalf("mismatch at test %d:\n  want %s\n  got  %s", i, expected, got)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkBigIntMul benchmarks standard math/big modular multiplication.
 func BenchmarkBigIntMul(b *testing.B) {
 	for _, bits := range []int{256, 512, 1024} {

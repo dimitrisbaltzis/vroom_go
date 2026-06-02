@@ -98,12 +98,18 @@ This implementation uses `math/big` internally for all residue arithmetic. It is
 2. The CRNS matrix-vector formulation (Appendix A of the paper) without CRT reconstruction
 3. AVX512IFMA instructions: 8 parallel 52-bit multiply-accumulates per cycle
 
+Stage 2 (rns_stage2.go) eliminates big.Int from the CRNS hot path entirely,
+closing the gap with math/big from ~80× to ~4× for 256-bit primes.
+
 ---
 
 ## Roadmap
 
 - [ ] Replace `math/big` residues with native `uint64` arithmetic
-- [ ] Implement CRNS via precomputed matrix (no CRT reconstruction)
+- [x] Implement CRNS via precomputed matrix (no CRT reconstruction)
+      Matrix-vector product with fixed-point k estimation (Appendix A).
+      Precision: 52 + ceil(log2(t)) bits. Zero big.Int at runtime.
+      Result: ~20× speedup over Stage 1, allocations 508 → 7 per op.
 - [ ] AVX512IFMA path via Go assembly (`.s` files)
 - [ ] Modular exponentiation using VROOM
 - [ ] BLS12-381 field extension arithmetic (`F²q`, `F¹²q`)
