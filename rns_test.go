@@ -251,6 +251,126 @@ func TestVROOMFastCorrectness(t *testing.T) {
 	}
 }
 
+// BenchmarkVROOMNoAlloc benchmarks Stage 2.5 (zero allocations).
+func BenchmarkVROOMNoAlloc(b *testing.B) {
+	for _, bits := range []int{256, 512, 1024} {
+		b.Run(fmt.Sprintf("%d-bit", bits), func(b *testing.B) {
+			p, _ := rand.Prime(rand.Reader, bits)
+			params := SetupRNSParamsNoAlloc(p)
+			a := randomInRange(p)
+			bv := randomInRange(p)
+			aM, aN := ToVROOMEncodingNoAlloc(a, params)
+			bM, bN := ToVROOMEncodingNoAlloc(bv, params)
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				VROOMNoAlloc(aM, aN, bM, bN, params)
+			}
+		})
+	}
+}
+
+// TestVROOMNoAllocCorrectness verifies zero-alloc version is correct.
+func TestVROOMNoAllocCorrectness(t *testing.T) {
+	for _, bits := range []int{64, 128, 256, 512, 1024} {
+		t.Run(fmt.Sprintf("%d-bit", bits), func(t *testing.T) {
+			p, _ := rand.Prime(rand.Reader, bits)
+			params := SetupRNSParamsNoAlloc(p)
+
+			for i := 0; i < 50; i++ {
+				a := randomInRange(p)
+				bv := randomInRange(p)
+
+				expected := new(big.Int).Mul(a, bv)
+				expected.Mod(expected, p)
+
+				aM, aN := ToVROOMEncodingNoAlloc(a, params)
+				bM, bN := ToVROOMEncodingNoAlloc(bv, params)
+				rM, _ := VROOMNoAlloc(aM, aN, bM, bN, params)
+
+				// Copy rM before next call overwrites workspace
+				rMCopy := make([]uint64, len(rM))
+				copy(rMCopy, rM)
+				got := FromVROOMEncodingNoAlloc(rMCopy, params)
+
+				if got.Cmp(expected) != 0 {
+					t.Fatalf("mismatch at test %d:\n  want %s\n  got  %s", i, expected, got)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkVROOMStage2 benchmarks Stage 2 (matrix CRNS, zero big.Int at runtime).
+func BenchmarkVROOMStage2(b *testing.B) {
+	for _, bits := range []int{256, 512, 1024} {
+		b.Run(fmt.Sprintf("%d-bit", bits), func(b *testing.B) {
+			p, _ := rand.Prime(rand.Reader, bits)
+			params := SetupRNSParamsStage2(p)
+			a := randomInRange(p)
+			bv := randomInRange(p)
+			aM, aN := ToVROOMEncodingStage2(a, params)
+			bM, bN := ToVROOMEncodingStage2(bv, params)
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				VROOMStage2(aM, aN, bM, bN, params)
+			}
+		})
+	}
+}
+
+// TestVROOMStage2Correctness verifies Stage 2 gives correct results.
+func TestVROOMStage2Correctness(t *testing.T) {
+	for _, bits := range []int{64, 128, 256, 512, 1024} {
+		t.Run(fmt.Sprintf("%d-bit", bits), func(t *testing.T) {
+			p, _ := rand.Prime(rand.Reader, bits)
+			params := SetupRNSParamsStage2(p)
+
+			for i := 0; i < 50; i++ {
+				a := randomInRange(p)
+				bv := randomInRange(p)
+
+				expected := new(big.Int).Mul(a, bv)
+				expected.Mod(expected, p)
+
+				aM, aN := ToVROOMEncodingStage2(a, params)
+				bM, bN := ToVROOMEncodingStage2(bv, params)
+				rM, _ := VROOMStage2(aM, aN, bM, bN, params)
+				got := FromVROOMEncodingStage2(rM, params)
+
+				if got.Cmp(expected) != 0 {
+					t.Fatalf("mismatch at test %d:\n  want %s\n  got  %s", i, expected, got)
+				}
+			}
+		})
+	}
+}
+
+// TestVROOMStage2Chained tests chained multiplications (mod exp simulation).
+func TestVROOMStage2Chained(t *testing.T) {
+	p, _ := rand.Prime(rand.Reader, 256)
+	params := SetupRNSParamsStage2(p)
+	base := randomInRange(p)
+
+	for _, exp := range []int{2, 10, 50, 100} {
+		t.Run(fmt.Sprintf("exp=%d", exp), func(t *testing.T) {
+			expected := new(big.Int).Exp(base, big.NewInt(int64(exp)), p)
+
+			accM, accN := ToVROOMEncodingStage2(base, params)
+			bM, bN := ToVROOMEncodingStage2(base, params)
+			for i := 1; i < exp; i++ {
+				accM, accN = VROOMStage2(accM, accN, bM, bN, params)
+			}
+			got := FromVROOMEncodingStage2(accM, params)
+
+			if got.Cmp(expected) != 0 {
+				t.Fatalf("base^%d mod p mismatch", exp)
+			}
+		})
+	}
+}
+
 // BenchmarkBigIntMul benchmarks standard math/big modular multiplication.
 func BenchmarkBigIntMul(b *testing.B) {
 	for _, bits := range []int{256, 512, 1024} {

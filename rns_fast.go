@@ -173,12 +173,9 @@ func mulmod(a, b, m uint64) uint64 {
 	if hi == 0 {
 		return lo % m
 	}
-	// hi != 0: use big.Int only as fallback (shouldn't happen with 32-bit moduli)
-	result := new(big.Int).SetUint64(hi)
-	result.Lsh(result, 64)
-	result.Or(result, new(big.Int).SetUint64(lo))
-	result.Mod(result, new(big.Int).SetUint64(m))
-	return result.Uint64()
+	// (hi:lo) % m via bits.Div64 — requires hi%m < m (always true)
+	_, rem := bits.Div64(hi%m, lo, m)
+	return rem
 }
 
 // addmod computes (a + b) mod m with no overflow.
