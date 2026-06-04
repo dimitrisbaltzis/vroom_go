@@ -273,3 +273,41 @@ func BenchmarkVROOMStage3(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkApplyAVX512_Parts_1024(b *testing.B) {
+    p, _ := rand.Prime(rand.Reader, 1024)
+    ps := SetupRNSParamsStage3_52(p)
+    r := make([]uint64, len(ps.BaseM.Moduli))
+    for i := range r { r[i] = rand.Uint64() % ps.BaseM.Moduli[i] }
+    
+    b.Run("full_Apply", func(b *testing.B) {
+        out := make([]uint64, ps.CRNS1.PadTTo)
+        lo := make([]uint64, ps.CRNS1.PadTTo)
+        hi := make([]uint64, ps.CRNS1.PadTTo)
+        b.ResetTimer()
+        for i := 0; i < b.N; i++ {
+            ps.CRNS1.ApplyAVX512(r, out, lo, hi)
+        }
+    })
+    b.Run("step1_avx512_only", func(b *testing.B) {
+        lo := make([]uint64, ps.CRNS1.PadTTo)
+        hi := make([]uint64, ps.CRNS1.PadTTo)
+        tFrom := len(r)
+        b.ResetTimer()
+        for i := 0; i < b.N; i++ {
+            for j := 0; j < ps.CRNS1.PadTTo; j++ { lo[j]=0; hi[j]=0 }
+            for i := 0; i < tFrom; i++ {
+                for g := 0; g < ps.CRNS1.PadTTo; g += 8 {
+                    broadcastMulAcc52(&lo[g], &hi[g], r[i], &ps.CRNS1.APadded[i][g])
+                }
+            }
+        }
+    })
+    b.Run("step3_k192_only", func(b *testing.B) {
+        tFrom := len(r)
+        b.ResetTimer()
+        for i := 0; i < b.N; i++ {
+            computeK192(r, ps.CRNS1.F, ps.CRNS1.FHi, ps.CRNS1.Prec, tFrom)
+        }
+    })
+}
