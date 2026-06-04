@@ -8,7 +8,6 @@ package main
 
 import (
 	"math/big"
-	"math/bits"
 )
 
 // --------------------------------------------------------------------------
@@ -23,7 +22,8 @@ func padTo8(n int) int {
 // processing 8 target lanes at a time with broadcastMulAcc52.
 type CRNSMatrixAVX512 struct {
 	APadded  [][]uint64 // [tFrom][paddedTTo] — rows padded to multiple of 8
-	F        []uint64   // [tFrom] — fixed-point k estimation vector
+	F        []uint64   // [tFrom] — low 64 bits of fixed-point F
+	FHi      []uint64   // [tFrom] — high bits of F (split-precision)
 	CPadded  []uint64   // [paddedTTo] — correction vector, padded
 	Pow52Mod []uint64   // [paddedTTo] — (1<<52) % n_j for combining hi+lo
 	Prec     uint
@@ -44,6 +44,7 @@ func NewCRNSMatrixAVX512(from, to *RNSBaseU64, y, z *big.Int) *CRNSMatrixAVX512 
 	mat := &CRNSMatrixAVX512{
 		APadded:  make([][]uint64, tFrom),
 		F:        reg.F,
+		FHi:      reg.FHi,
 		CPadded:  make([]uint64, padded),
 		Pow52Mod: make([]uint64, padded),
 		Prec:     reg.Prec,
@@ -98,20 +99,8 @@ func (m *CRNSMatrixAVX512) ApplyAVX512(r []uint64, out, accLo, accHi []uint64) {
 		out[j] = (hiPart + accLo[j]) % nj
 	}
 
-	// Step 3: k estimation via fixed-point dot product (scalar)
-	var sumHi, sumLo uint64
-	for i := 0; i < tFrom; i++ {
-		hi, lo := bits.Mul64(r[i], m.F[i])
-		var carry uint64
-		sumLo, carry = bits.Add64(sumLo, lo, 0)
-		sumHi, _ = bits.Add64(sumHi, hi, carry)
-	}
-	var k uint64
-	if m.Prec < 64 {
-		k = (sumHi << (64 - m.Prec)) | (sumLo >> m.Prec)
-	} else {
-		k = sumHi >> (m.Prec - 64)
-	}
+	// Step 3: k estimation via 192-bit split-precision accumulator (scalar)
+	k := computeK192(r[:tFrom], m.F, m.FHi, m.Prec, tFrom)
 
 	// Step 4: apply correction
 	for j := 0; j < m.TTo; j++ {

@@ -7,7 +7,6 @@ package main
 
 import (
 	"math/big"
-	"math/bits"
 )
 
 // Workspace holds pre-allocated buffers reused across multiplications.
@@ -77,20 +76,8 @@ func (m *CRNSMatrixU64) ApplyTo(r []uint64, out []uint64, acc []uint64) {
 		acc[j] = a
 	}
 
-	// Step 2: compute k
-	var sumHi, sumLo uint64
-	for i := 0; i < tFrom; i++ {
-		hi, lo := bits.Mul64(r[i], m.F[i])
-		var carry uint64
-		sumLo, carry = bits.Add64(sumLo, lo, 0)
-		sumHi, _ = bits.Add64(sumHi, hi, carry)
-	}
-	var k uint64
-	if m.Prec < 64 {
-		k = (sumHi << (64 - m.Prec)) | (sumLo >> m.Prec)
-	} else {
-		k = sumHi >> (m.Prec - 64)
-	}
+	// Step 2: compute k via 192-bit accumulator
+	k := computeK192(r, m.F, m.FHi, m.Prec, tFrom)
 
 	// Step 3: correction → out
 	for j := 0; j < tTo; j++ {

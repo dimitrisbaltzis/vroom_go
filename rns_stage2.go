@@ -22,9 +22,10 @@ import (
 // All runtime operations use only uint64 arithmetic.
 type CRNSMatrixU64 struct {
 	A     [][]uint64 // [fromSize][toSize] matrix
-	F     []uint64   // [fromSize] fixed-point approximation vector
+	F     []uint64   // [fromSize] low 64 bits of fixed-point F
+	FHi   []uint64   // [fromSize] high bits of F (F = FHi*2^64 + F)
 	C     []uint64   // [toSize] correction vector
-	Prec  uint       // precision bits for fixed-point k estimation
+	Prec  uint       // precision bits for fixed-point k estimation (94)
 	ToMod []uint64   // target moduli (for runtime reduction)
 }
 
@@ -36,18 +37,15 @@ func PrecomputeCRNS(from, to *RNSBaseU64, y, z *big.Int) *CRNSMatrixU64 {
 	fromProd := from.Product
 
 	// Precision for fixed-point k estimation.
-	// Paper requires u > w + log2(t) + 1. We use generous margin
-	// to avoid edge-case rounding errors with 32-bit moduli.
-	logT := uint(bits.Len(uint(tFrom)))
-	prec := uint(52 + logT)
-	// Verify F values will fit in uint64 (F < 2^prec + 1)
-	if prec > 62 {
-		prec = 62
-	}
+	// We use split-precision: F = FHi*2^64 + FLo, accumulated with a 192-bit
+	// accumulator. This allows prec=94 regardless of modulus width, giving
+	// error < t * 2^(w-94) ≈ 0 for any practical t and w ≤ 52.
+	prec := uint(94)
 
 	mat := &CRNSMatrixU64{
 		A:     make([][]uint64, tFrom),
 		F:     make([]uint64, tFrom),
+		FHi:   make([]uint64, tFrom),
 		C:     make([]uint64, tTo),
 		Prec:  prec,
 		ToMod: to.Moduli,
@@ -59,6 +57,7 @@ func PrecomputeCRNS(from, to *RNSBaseU64, y, z *big.Int) *CRNSMatrixU64 {
 	//   A[i][j] = (ICRT_i_y * z) mod n_j
 	//   f[i]    = ceil(2^prec * ICRT_i_y / M)
 	twoPrec := new(big.Int).Lsh(bigOne, prec)
+	mask64 := new(big.Int).Sub(new(big.Int).Lsh(bigOne, 64), bigOne) // 2^64 - 1
 
 	for i, mi := range from.Moduli {
 		miBig := new(big.Int).SetUint64(mi)
@@ -80,11 +79,12 @@ func PrecomputeCRNS(from, to *RNSBaseU64, y, z *big.Int) *CRNSMatrixU64 {
 			mat.A[i][j] = new(big.Int).Mod(ICRTiYZ, njBig).Uint64()
 		}
 
-		// f[i] = ceil(2^prec * ICRT_i_y / M)
+		// f[i] = ceil(2^prec * ICRT_i_y / M) — stored as (FHi, F) pair
 		fi := new(big.Int).Mul(twoPrec, ICRTiY)
 		fi.Add(fi, new(big.Int).Sub(fromProd, bigOne)) // add (M-1) for ceiling
 		fi.Div(fi, fromProd)
-		mat.F[i] = fi.Uint64()
+		mat.F[i] = new(big.Int).And(fi, mask64).Uint64()          // low 64 bits
+		mat.FHi[i] = new(big.Int).Rsh(fi, 64).Uint64()            // high bits
 	}
 
 	// c[j] = (-M * z) mod n_j
@@ -106,7 +106,7 @@ func PrecomputeCRNS(from, to *RNSBaseU64, y, z *big.Int) *CRNSMatrixU64 {
 //
 // Algorithm (Appendix A of the paper):
 //   Step 1: a[j] = Σ_i r[i] * A[i][j]  mod n_j    (matrix-vector product)
-//   Step 2: k    = ⌊ Σ_i r[i] * f[i] / 2^prec ⌋   (overflow estimation)
+//   Step 2: k    = ⌊ Σ_i r[i] * f[i] / 2^prec ⌋   (overflow estimation, 192-bit)
 //   Step 3: result[j] = a[j] + k * c[j]  mod n_j   (correction)
 func (m *CRNSMatrixU64) Apply(r []uint64) []uint64 {
 	tFrom := len(r)
@@ -124,21 +124,8 @@ func (m *CRNSMatrixU64) Apply(r []uint64) []uint64 {
 		a[j] = acc
 	}
 
-	// Step 2: compute k via fixed-point dot product with 128-bit accumulator
-	var sumHi, sumLo uint64
-	for i := 0; i < tFrom; i++ {
-		hi, lo := bits.Mul64(r[i], m.F[i])
-		var carry uint64
-		sumLo, carry = bits.Add64(sumLo, lo, 0)
-		sumHi, _ = bits.Add64(sumHi, hi, carry)
-	}
-	// k = (sumHi:sumLo) >> prec
-	var k uint64
-	if m.Prec < 64 {
-		k = (sumHi << (64 - m.Prec)) | (sumLo >> m.Prec)
-	} else {
-		k = sumHi >> (m.Prec - 64)
-	}
+	// Step 2: compute k via split-precision dot product with 192-bit accumulator
+	k := computeK192(r, m.F, m.FHi, m.Prec, tFrom)
 
 	// Step 3: apply correction
 	result := make([]uint64, tTo)
@@ -149,6 +136,45 @@ func (m *CRNSMatrixU64) Apply(r []uint64) []uint64 {
 	}
 
 	return result
+}
+
+// computeK192 computes k = floor(Σ r[i]*(FHi[i]*2^64 + FLo[i]) / 2^prec)
+// using a 192-bit accumulator. This eliminates the off-by-one k estimation
+// error that occurs with 128-bit accumulation and 52-bit moduli.
+func computeK192(r, fLo, fHi []uint64, prec uint, tFrom int) uint64 {
+	// Accumulate Σ r[i]*FLo[i] in 128 bits → (sLoHi:sLoLo)
+	var sLoHi, sLoLo uint64
+	for i := 0; i < tFrom; i++ {
+		hi, lo := bits.Mul64(r[i], fLo[i])
+		var carry uint64
+		sLoLo, carry = bits.Add64(sLoLo, lo, 0)
+		sLoHi, _ = bits.Add64(sLoHi, hi, carry)
+	}
+
+	// Accumulate Σ r[i]*FHi[i] in 128 bits → (sHiHi:sHiLo)
+	var sHiHi, sHiLo uint64
+	for i := 0; i < tFrom; i++ {
+		hi, lo := bits.Mul64(r[i], fHi[i])
+		var carry uint64
+		sHiLo, carry = bits.Add64(sHiLo, lo, 0)
+		sHiHi, _ = bits.Add64(sHiHi, hi, carry)
+	}
+
+	// Combine into 192-bit total: (word2:word1:word0)
+	// total = (sHiHi:sHiLo) * 2^64 + (sLoHi:sLoLo)
+	word0 := sLoLo
+	_ = word0 // word0 not needed for k when prec ≥ 64
+	word1 := sLoHi
+	word2 := uint64(0)
+	var carry uint64
+	word1, carry = bits.Add64(word1, sHiLo, 0)
+	word2, _ = bits.Add64(word2, sHiHi, carry)
+
+	// k = (word2:word1:word0) >> prec
+	// prec = 94 → extract bits [94, ...)
+	// bit 94 is in word1 at position 94-64=30
+	shift := prec - 64 // 30
+	return (word2 << (64 - shift)) | (word1 >> shift)
 }
 
 // --------------------------------------------------------------------------
