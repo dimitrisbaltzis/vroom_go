@@ -278,7 +278,7 @@ func BenchmarkApplyAVX512_Parts_1024(b *testing.B) {
     p, _ := rand.Prime(rand.Reader, 1024)
     ps := SetupRNSParamsStage3_52(p)
     r := make([]uint64, len(ps.BaseM.Moduli))
-    for i := range r { r[i] = rand.Uint64() % ps.BaseM.Moduli[i] }
+    for i := range r { r[i] = randomInRange(new(big.Int).SetUint64(ps.BaseM.Moduli[i])).Uint64() }
     
     b.Run("full_Apply", func(b *testing.B) {
         out := make([]uint64, ps.CRNS1.PadTTo)
