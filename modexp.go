@@ -3,9 +3,9 @@
 // a^e mod p using square-and-multiply, where each multiplication
 // is a single VROOMStage4 call (~800 ns for 1024-bit).
 //
-// Two variants:
-//   ModExpVROOM          — left-to-right binary, non-constant-time (public exponents)
-//   ModExpVROOMConstTime — always-multiply with conditional copy (secret exponents)
+// Two API levels:
+//   ModExpVROOM / ModExpVROOMConstTime — convenience (encode + exp + decode)
+//   ModExpInner / ModExpInnerConstTime — zero-alloc inner loop (pre-encoded)
 
 package main
 
@@ -14,13 +14,14 @@ import (
 )
 
 // ModExpWorkspace holds pre-allocated buffers for zero-allocation modexp.
+// Allocate once, reuse across calls.
 type ModExpWorkspace struct {
-	accM, accN   []uint64 // current accumulator
-	sqM, sqN     []uint64 // saved square result (constant-time only)
-	tM, tN       int
+	accM, accN []uint64 // current accumulator
+	sqM, sqN   []uint64 // saved square result (constant-time only)
+	tM, tN     int
 }
 
-// NewModExpWorkspace allocates buffers for modular exponentiation.
+// NewModExpWorkspace allocates buffers once.
 func NewModExpWorkspace(params *MontParamsStage4) *ModExpWorkspace {
 	tM := len(params.BaseM.Moduli)
 	tN := len(params.BaseN.Moduli)
@@ -35,27 +36,26 @@ func NewModExpWorkspace(params *MontParamsStage4) *ModExpWorkspace {
 }
 
 // ============================================================================
-// Public-exponent modular exponentiation (non-constant-time)
+// Inner modexp — zero allocations, works on pre-encoded VROOM values
 // ============================================================================
 
-// ModExpVROOM computes base^exp mod p using left-to-right binary method.
+// ModExpInner computes base^exp in VROOM form. Zero allocations.
+// NOT constant-time — branches on bits of exp.
 //
-// NOT constant-time — branches on bits of exp. Safe only for public exponents
-// (e.g. RSA verify with e = 65537).
-//
-// For 1024-bit p, e = 65537: 17 squares + 1 multiply = 18 VROOM calls ≈ 14 μs.
-// For 1024-bit p, 1024-bit e: ~1536 VROOM calls ≈ 1.2 ms.
-func ModExpVROOM(base, exp *big.Int, params *MontParamsStage4) *big.Int {
+// baseM, baseN: pre-encoded base via ToVROOMEncodingStage4
+// Result is written to w.accM, w.accN (caller reads from there).
+func ModExpInner(baseM, baseN []uint64, exp *big.Int,
+	w *ModExpWorkspace, params *MontParamsStage4) {
+
 	if exp.Sign() == 0 {
-		return big.NewInt(1)
+		// a^0 = 1 — encode 1 into accumulator
+		oneM, oneN := ToVROOMEncodingStage4(big.NewInt(1), params)
+		copy(w.accM, oneM)
+		copy(w.accN, oneN)
+		return
 	}
 
-	w := NewModExpWorkspace(params)
-
-	// Encode base into VROOM form (T-rotated Montgomery RNS)
-	baseM, baseN := ToVROOMEncodingStage4(base, params)
-
-	// Initialize accumulator = base (MSB is always 1)
+	// acc = base (MSB is always 1)
 	copy(w.accM, baseM)
 	copy(w.accN, baseN)
 
@@ -73,66 +73,69 @@ func ModExpVROOM(base, exp *big.Int, params *MontParamsStage4) *big.Int {
 			copy(w.accN, rN)
 		}
 	}
-
-	return FromVROOMEncodingStage4(w.accM, params)
 }
 
-// ============================================================================
-// Secret-exponent modular exponentiation (constant-time)
-// ============================================================================
+// ModExpInnerConstTime computes base^exp in VROOM form. Zero allocations.
+// Constant-time — no data-dependent branches.
+func ModExpInnerConstTime(baseM, baseN []uint64, exp *big.Int,
+	w *ModExpWorkspace, params *MontParamsStage4) {
 
-// ModExpVROOMConstTime computes base^exp mod p in constant time.
-//
-// Always executes both square and multiply for every bit of the exponent,
-// then uses a constant-time conditional copy to select the correct result.
-// No data-dependent branches, no timing side-channel on exp.
-//
-// Cost: 2 VROOM calls per bit of exp (vs 1.5 average for non-constant-time).
-// For 1024-bit e: 2048 VROOM calls ≈ 1.6 ms.
-func ModExpVROOMConstTime(base, exp *big.Int, params *MontParamsStage4) *big.Int {
 	if exp.Sign() == 0 {
-		return big.NewInt(1)
+		oneM, oneN := ToVROOMEncodingStage4(big.NewInt(1), params)
+		copy(w.accM, oneM)
+		copy(w.accN, oneN)
+		return
 	}
 
-	w := NewModExpWorkspace(params)
-
-	baseM, baseN := ToVROOMEncodingStage4(base, params)
-
-	// Initialize accumulator = base (MSB is always 1)
 	copy(w.accM, baseM)
 	copy(w.accN, baseN)
 
 	for i := exp.BitLen() - 2; i >= 0; i-- {
-		// Square: acc = acc * acc → save to sq
+		// Square → save to sq
 		rM, rN := VROOMStage4(w.accM, w.accN, w.accM, w.accN, params)
 		copy(w.sqM, rM)
 		copy(w.sqN, rN)
 
-		// Multiply: sq * base → result in workspace
+		// Multiply: sq * base → workspace
 		rM, rN = VROOMStage4(w.sqM, w.sqN, baseM, baseN, params)
 
-		// Constant-time conditional copy:
-		//   bit=1 → acc = multiply result (rM, rN)
-		//   bit=0 → acc = square result (sqM, sqN)
+		// Constant-time select: bit=1 → mul result, bit=0 → sq result
 		bit := uint64(exp.Bit(i))
 		ctCondCopy(w.accM, w.sqM, rM, bit, w.tM)
 		ctCondCopy(w.accN, w.sqN, rN, bit, w.tN)
 	}
-
-	return FromVROOMEncodingStage4(w.accM, params)
 }
 
-// ctCondCopy performs a constant-time conditional copy:
-//
-//	if sel == 1: dst[i] = ifOne[i]
-//	if sel == 0: dst[i] = ifZero[i]
-//
-// No branches, no data-dependent memory access. sel must be 0 or 1.
+// ctCondCopy: dst = sel ? ifOne : ifZero. No branches.
 //
 //go:nosplit
 func ctCondCopy(dst, ifZero, ifOne []uint64, sel uint64, n int) {
-	mask := -sel // 0xFFFFFFFFFFFFFFFF if sel=1, 0x0 if sel=0
+	mask := -sel
 	for i := 0; i < n; i++ {
 		dst[i] = (ifOne[i] & mask) | (ifZero[i] & ^mask)
 	}
+}
+
+// ============================================================================
+// Convenience wrappers — encode + inner + decode
+// ============================================================================
+
+// ModExpVROOM computes base^exp mod p. Non-constant-time.
+func ModExpVROOM(base, exp *big.Int, w *ModExpWorkspace, params *MontParamsStage4) *big.Int {
+	if exp.Sign() == 0 {
+		return big.NewInt(1)
+	}
+	baseM, baseN := ToVROOMEncodingStage4(base, params)
+	ModExpInner(baseM, baseN, exp, w, params)
+	return FromVROOMEncodingStage4(w.accM, params)
+}
+
+// ModExpVROOMConstTime computes base^exp mod p. Constant-time on exp.
+func ModExpVROOMConstTime(base, exp *big.Int, w *ModExpWorkspace, params *MontParamsStage4) *big.Int {
+	if exp.Sign() == 0 {
+		return big.NewInt(1)
+	}
+	baseM, baseN := ToVROOMEncodingStage4(base, params)
+	ModExpInnerConstTime(baseM, baseN, exp, w, params)
+	return FromVROOMEncodingStage4(w.accM, params)
 }
