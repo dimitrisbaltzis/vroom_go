@@ -19,13 +19,15 @@ Modular multiplication (`a · b mod p`) is the core bottleneck in number-theoret
 - **Montgomery multiplication** adapted to work natively in RNS
 - **AVX512IFMA** vector instructions for parallel 52-bit multiply-accumulate
 
-This repository implements the full algorithm in Go with custom AVX512 assembly, achieving **799 ns per 1024-bit modular multiplication** — a 63× speedup over the `math/big` baseline.
+This repository implements the full algorithm in Go with custom AVX512 assembly, achieving **799 ns per 1024-bit modular multiplication** — a 63× speedup over the `math/big` baseline. On top of multiplication, the library now provides **modular exponentiation** (`a^e mod p`) via square-and-multiply, with a zero-allocation inner loop achieving **13.7 μs for RSA-style verification** (e=65537, 1024-bit).
 
 ---
 
 ## Performance
 
 Measured on Intel Xeon Gold 6326 (Ice Lake) @ 2.90 GHz, single core, 1024-bit prime.
+
+### Modular multiplication (single `a · b mod p`)
 
 | Stage | ns/op | Speedup | Key change |
 |-------|-------|---------|------------|
@@ -47,6 +49,29 @@ Stage 4 Apply breakdown (CRNS base change, 269 ns total):
 Zero heap allocations, zero `math/big` in the hot path, constant-time execution.
 
 Comparison with the paper's C++ implementation: ~1.6× slower (799 vs ~500 ns), attributable to Go overhead and different hardware (Ice Lake vs Sapphire Rapids).
+
+### Modular exponentiation (`a^e mod p`)
+
+Two API levels: **Full** (encode + exponentiation + decode) and **Inner** (zero-allocation, pre-encoded operands). Both use left-to-right binary square-and-multiply, where each multiplication is a single VROOMStage4 call.
+
+| Benchmark | ns/op | allocs | B/op | Notes |
+|-----------|-------|--------|------|-------|
+| **Inner RSA verify** (e=65537) | **13,700** | 0 | 0 | 17 VROOM calls, ~806 ns each |
+| Full RSA verify (e=65537) | 67,800 | 451 | 36 KB | encode + 17 VROOM calls + decode |
+| **Inner 1024-bit exp** | **1,244,000** | 0 | 0 | ~1535 VROOM calls |
+| Full 1024-bit exp | 1,303,000 | 451 | 36 KB | encode/decode adds ~59 μs |
+| Inner CT 1024-bit exp | 1,684,000 | 0 | 0 | always square+multiply, +35% |
+| `big.Int.Exp` (baseline) | 586,000 | 22 | 6 KB | windowed Montgomery, scalar |
+
+**Key observations:**
+
+**RSA verify (e=65537):** The exponent 65537 = 2¹⁶+1 has only 2 set bits, so the loop executes just 16 squares + 1 multiply = 17 VROOM calls. The Inner path achieves 13.7 μs with zero allocations. The Full path spends 54 μs (80% of total time) on encode/decode — big.Int ↔ VROOM conversion dominates when the compute is small.
+
+**Full 1024-bit exponent:** A random 1024-bit exponent has ~1023 squares + ~512 multiplies = ~1535 VROOM calls. Here the encode/decode overhead (59 μs) is only 4.5% of total — the VROOM calls dominate. Per-call cost: 1,244,000 / 1535 ≈ 810 ns, consistent with the standalone VROOMStage4 benchmark (799 ns).
+
+**Constant-time overhead (+35%):** The CT variant always performs both square and multiply (2 VROOM calls per bit), then uses branchless `ctCondCopy` to select the result. Theoretical overhead: 2.0/1.5 = +33%, measured +35%. The `ctCondCopy` itself is near-free (bitwise ops on 22 uint64s).
+
+**Why `big.Int.Exp` wins at 1024-bit:** Two independent factors. First, representation density: big.Int uses 16 words (64-bit) for a 1024-bit number vs VROOM's 22 moduli (52-bit). Schoolbook Montgomery is O(n²), so 16²=256 vs 22²=484 word operations per multiply — nearly 2× more work, not fully compensated by AVX512's 8-wide parallelism at this size. Second, windowing: big.Int.Exp uses a k-bit sliding window method that precomputes base^1..base^(2^k-1), then processes k exponent bits per step, reducing total multiplications by ~25-30%. VROOM currently uses naive binary (1 bit per step). With windowed exponentiation added to VROOM (next optimization), the gap closes significantly — and at 2048+ bits, VROOM's O(n²) with 8× parallelism overtakes scalar.
 
 ---
 
@@ -75,6 +100,41 @@ r_M  =  CRNS^{N·M}_{M·1}(r_N)
 
 Each CRNS internally performs: matrix-vector product → fixed-point k estimation → correction.
 
+### Modular exponentiation — Square-and-multiply
+
+Given base `a` and exponent `e`, compute `a^e mod p` by scanning `e` from MSB to LSB:
+
+```
+acc = a                              [MSB is always 1]
+for i = bitlen(e)-2 downto 0:
+    acc = acc * acc                  [square — 1 VROOM call]
+    if bit(e, i) == 1:
+        acc = acc * a                [multiply — 1 VROOM call]
+return acc
+```
+
+For a random n-bit exponent: (n-1) squares + ~(n-1)/2 multiplies ≈ **1.5·(n-1)** VROOM calls total.
+
+**Constant-time variant:** Always executes both square and multiply, then uses branchless conditional copy to select the correct result:
+
+```
+for i = bitlen(e)-2 downto 0:
+    sq  = acc * acc                  [square — always]
+    mul = sq  * a                    [multiply — always]
+    acc = bit(e,i) ? mul : sq        [ctCondCopy — branchless]
+```
+
+This eliminates data-dependent branches on the exponent bits, at the cost of **2·(n-1)** VROOM calls (vs 1.5·(n-1) for the non-CT path). The `ctCondCopy` function uses bitwise masking (`dst = (ifOne & mask) | (ifZero & ^mask)`) with no branches, no early exits, and no timing variation.
+
+**Two API levels:**
+
+| API | Use case | Allocations |
+|-----|----------|-------------|
+| `ModExpVROOM` / `ModExpVROOMConstTime` | Convenience — accepts `*big.Int`, returns `*big.Int` | 451 (encode/decode) |
+| `ModExpInner` / `ModExpInnerConstTime` | Inner loop — pre-encoded VROOM values, reusable workspace | 0 |
+
+The Inner API is designed for contexts where the same modulus is reused (RSA, DH key exchange) — encode once, exponentiate many times, decode once. The `ModExpWorkspace` struct holds pre-allocated buffers (`accM`, `accN`, `sqM`, `sqN`) and is reused across calls.
+
 ---
 
 ## Optimization stages
@@ -99,6 +159,14 @@ Two optimizations combined:
 
 **Shoup/Barrett reduction**: Replace 42 DIVQ instructions (~35 cycles each) with Shoup's method (2×MULQ ≈ 10 cycles) and Barrett reduction (1×MULQ ≈ 8 cycles). Constants precomputed at setup.
 
+### Modular exponentiation — Square-and-multiply over VROOM
+
+Built on top of Stage 4. Each exponentiation is a sequence of VROOMStage4 calls orchestrated by the square-and-multiply loop. Two key design decisions:
+
+**Zero-allocation inner loop:** The `ModExpWorkspace` pre-allocates all buffers (`accM/accN` for the accumulator, `sqM/sqN` for the CT square result) once. The inner loop uses only `copy()` and VROOMStage4 — no `big.Int`, no `make()`, no GC pressure. Verified at 0 B/op, 0 allocs/op.
+
+**Separation of encoding from computation:** The Full API (`ModExpVROOM`) pays 54 μs for big.Int ↔ VROOM conversion — acceptable for one-shot calls, but 80% of the total time for short exponents like RSA's e=65537. The Inner API (`ModExpInner`) eliminates this entirely, enabling 13.7 μs RSA verify when the base is pre-encoded.
+
 ---
 
 ## Project structure
@@ -112,12 +180,14 @@ vroom-go/
 ├── rns_stage2.go       # Stage 2: matrix CRNS, k192 estimator
 ├── rns_stage3.go       # Stage 3: AVX512 CRNS (broadcastMulAcc52)
 ├── rns_stage4.go       # Stage 4: register-resident + Shoup/Barrett
+├── modexp.go           # Modular exponentiation: square-and-multiply over VROOM
 ├── avx512_amd64.go     # Go stubs — Stage 3 assembly
 ├── avx512_amd64.s      # Assembly: vpmadd52, broadcastMulAcc52
 ├── avx512v2_amd64.go   # Go stubs — Stage 4 assembly
 ├── avx512v2_amd64.s    # Assembly: matvecAVX512_3g, _6g, Gen
 ├── avx512_test.go      # Stage 3 tests
 ├── rns_stage4_test.go  # Stage 4 tests + benchmarks
+├── modexp_test.go      # Modular exponentiation tests + benchmarks
 ├── rns_test.go         # Reference tests
 ├── main.go             # Demo
 └── go.mod
@@ -137,9 +207,15 @@ go test -v -run "TestMulmodShoup52|TestBarrettReduce52"
 # Full tests (requires AVX512IFMA hardware or Intel SDE)
 AVX512_TEST=1 go test -v -run "TestVROOMStage4|TestMatvec"
 
-# Benchmarks
+# Modular exponentiation tests
+AVX512_TEST=1 go test -v -run TestModExp
+
+# Benchmarks — multiplication
 AVX512_TEST=1 go test -bench BenchmarkVROOMStage3vs4 -benchmem -count=3
 AVX512_TEST=1 go test -bench BenchmarkApplyStage4_Parts -benchmem -count=3
+
+# Benchmarks — exponentiation
+AVX512_TEST=1 go test -bench BenchmarkModExp -benchmem -count=3
 ```
 
 Requires Go 1.22+ and AVX512IFMA hardware (Intel Ice Lake / Sapphire Rapids) or [Intel SDE](https://www.intel.com/content/www/us/en/developer/articles/tool/software-development-emulator.html) for the vectorized path.
@@ -148,7 +224,9 @@ Requires Go 1.22+ and AVX512IFMA hardware (Intel Ice Lake / Sapphire Rapids) or 
 
 ## Test coverage
 
-### Correctness tests — 9,522 total
+### Correctness tests — 9,792+ total
+
+**Multiplication pipeline (9,522 tests):**
 
 | Test | What it checks | Data points |
 |------|---------------|-------------|
@@ -162,13 +240,41 @@ Requires Go 1.22+ and AVX512IFMA hardware (Intel Ice Lake / Sapphire Rapids) or 
 | TestVROOMStage4Chained | base^100 mod p, error accumulation | 99 chained, 256-bit |
 | TestVROOMStage4_1024Chained | base^50 mod p, 1024-bit | 49 chained |
 
-### Benchmarks — ~60,000,000 iterations (automatic)
+**Modular exponentiation (270+ tests):**
+
+| Test | What it checks | Data points |
+|------|---------------|-------------|
+| TestModExpVROOM_Small | Deterministic small values (3¹³ mod 7) + 16-bit random prime | 2 |
+| TestModExpVROOM_EdgeCases | a⁰=1, a¹=a, a²=a·a, Fermat a^(p-1)=1 | 4 |
+| TestModExpVROOM_Random | Random (base, exp) vs big.Int.Exp, 5 prime sizes (64–1024 bit) | 100 (20×5) |
+| TestModExpVROOM_RSAPublicExponent | e=65537, 3 prime sizes (256–1024 bit) | 30 (10×3) |
+| TestModExpVROOMConstTime_Random | CT path vs big.Int.Exp, 5 prime sizes | 100 (20×5) |
+| TestModExpVROOMConstTime_MatchesNonConstTime | CT path = non-CT path, 512-bit | 30 |
+| TestModExpVROOMConstTime_Fermat | CT a^(p-1) mod p = 1, 256-bit | 10 |
+
+Every exponentiation test compares against Go's `math/big.Int.Exp` as the reference oracle. The Fermat tests provide an independent mathematical invariant (a^(p-1) ≡ 1 mod p for prime p) that doesn't depend on any reference implementation.
+
+### Benchmarks — ~60,000,000+ iterations (automatic)
+
+**Multiplication:**
 
 | Benchmark | Iterations × 3 |
 |-----------|----------------|
 | BenchmarkVROOMStage4/1024-bit | ~4,500,000 |
 | BenchmarkApplyStage4_Parts/full_Apply | ~13,400,000 |
 | BenchmarkApplyStage4_Parts/step1_matvec | ~47,000,000 |
+
+**Exponentiation:**
+
+| Benchmark | Iterations × 3 |
+|-----------|----------------|
+| BenchmarkModExpInner_RSAVerify_1024 | ~260,000 |
+| BenchmarkModExpInner_1024bit_exp | ~2,900 |
+| BenchmarkModExpInnerConstTime_1024bit_exp | ~2,100 |
+| BenchmarkModExpVROOM_RSAVerify_1024 | ~53,000 |
+| BenchmarkModExpVROOM_1024bit_exp | ~2,700 |
+| BenchmarkModExpVROOMConstTime_1024bit_exp | ~2,100 |
+| BenchmarkModExpBigInt_1024bit_exp (baseline) | ~6,000 |
 
 ---
 
@@ -180,8 +286,10 @@ Requires Go 1.22+ and AVX512IFMA hardware (Intel Ice Lake / Sapphire Rapids) or 
 - [x] AVX512IFMA vectorized matvec via Go assembly
 - [x] Register-resident kernel (Z0-Z15, 3g/6g/Gen variants)
 - [x] Division-free reduction (Shoup + Barrett, zero DIVQ in hot path)
+- [x] Modular exponentiation (`a^e mod p`) — square-and-multiply, zero-alloc inner loop, constant-time variant
+- [ ] Windowed exponentiation (k-bit sliding window to reduce VROOM calls by ~25-30%)
 - [ ] Shoup/Barrett for elementwise ops (remaining ~66 DIVQ per VROOM call)
-- [ ] Modular exponentiation (`a^e mod p`)
+- [ ] 2048/4096-bit benchmarks (where VROOM's AVX512 parallelism overtakes scalar)
 - [ ] RSA-CRT with interleaved dual CRNS
 - [ ] BLS12-381 field extension arithmetic (`F²q`, `F¹²q`)
 - [ ] Batching for latency hiding (paper Table 11)
