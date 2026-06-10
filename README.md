@@ -63,6 +63,10 @@ Three strategies, each building on the previous:
 | Full RSA verify (e=65537) | 67,800 | 451 | 36 KB | encode + 17 VROOM calls + decode |
 | Full 1024-bit exp | 1,303,000 | 451 | 36 KB | encode/decode adds ~59 μs |
 | `big.Int.Exp` (baseline) | 586,000 | 22 | 6 KB | windowed Montgomery, scalar |
+| VROOMStage4 mul 2048-bit | 1,587 | 0 | 0 | 1.66× faster than big.Int mul |
+| **Precomputed 2048-bit exp** | **1,669,000** | **0** | **0** | 2.1× faster than big.Int.Exp |
+| Inner naive 2048-bit exp | 4,948,000 | 0 | 0 | ~3071 VROOM calls |
+| big.Int.Exp 2048-bit | 3,533,000 | 22 | 12 KB | baseline |
 
 **Precomputed table (423 μs — 1.4× faster than `big.Int.Exp`):** Precompute `base^(2^i)` for every bit position `i` and store in VROOM form. At runtime, scan the exponent LSB→MSB and multiply only for set bits — no squaring at runtime, only ~512 multiplies for a random 1024-bit exponent. Precompute cost: 1023 squarings (~828 μs, one-time). Memory: ~360 KB. Amortizes after a single exponentiation — ideal when base/modulus are reused (RSA, DH, repeated signatures).
 
@@ -351,7 +355,7 @@ Every exponentiation test compares against Go's `math/big.Int.Exp` as the refere
 - [x] Modular exponentiation (`a^e mod p`) — square-and-multiply, zero-alloc inner loop, constant-time variant
 - [x] Precomputed-table exponentiation — 423 μs for 1024-bit, 1.4× faster than `big.Int.Exp`
 - [ ] Shoup/Barrett for elementwise ops (remaining ~66 DIVQ per VROOM call)
-- [ ] 2048/4096-bit benchmarks (where VROOM's AVX512 parallelism overtakes scalar further)
+- [x] 2048-bit benchmarks — precomputed 1.669 ms (2.1× faster than big.Int.Exp at 2048-bit)
 - [ ] RSA-CRT with interleaved dual CRNS
 - [ ] BLS12-381 field extension arithmetic (`F²q`, `F¹²q`)
 - [ ] Batching for latency hiding (paper Table 11)
