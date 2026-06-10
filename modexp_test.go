@@ -86,7 +86,7 @@ func TestModExpVROOM_EdgeCases(t *testing.T) {
 func TestModExpVROOM_Random(t *testing.T) {
 	skipWithoutAVX512ME(t)
 
-	for _, bits := range []int{64, 128, 256, 512, 1024} {
+	for _, bits := range []int{64, 128, 256, 512, 1024, 2048} {
 		t.Run(fmt.Sprintf("%d-bit", bits), func(t *testing.T) {
 			p, _ := rand.Prime(rand.Reader, bits)
 			params := SetupRNSParamsStage4(p)
@@ -136,7 +136,7 @@ func TestModExpVROOM_RSAPublicExponent(t *testing.T) {
 func TestModExpVROOMConstTime_Random(t *testing.T) {
 	skipWithoutAVX512ME(t)
 
-	for _, bits := range []int{64, 128, 256, 512, 1024} {
+	for _, bits := range []int{64, 128, 256, 512, 1024, 2048} {
 		t.Run(fmt.Sprintf("%d-bit", bits), func(t *testing.T) {
 			p, _ := rand.Prime(rand.Reader, bits)
 			params := SetupRNSParamsStage4(p)
