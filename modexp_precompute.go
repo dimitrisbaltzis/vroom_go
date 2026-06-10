@@ -24,10 +24,13 @@ import (
 
 // VROOMPreTable holds precomputed powers base^(2^i) in VROOM encoding.
 // table[i] = base^(2^i) mod p, stored as RNS residues.
+// Also caches the identity element (1) in VROOM form to avoid encoding at runtime.
 // Build once with NewVROOMPreTable, reuse across exponentiations.
 type VROOMPreTable struct {
 	tableM [][]uint64 // tableM[i] = M-residues of base^(2^i)
 	tableN [][]uint64 // tableN[i] = N-residues of base^(2^i)
+	oneM   []uint64   // pre-encoded identity (1) — M-residues
+	oneN   []uint64   // pre-encoded identity (1) — N-residues
 	maxBits int       // number of precomputed bit positions
 	tM, tN  int       // residue counts
 }
@@ -43,13 +46,20 @@ func NewVROOMPreTable(base *big.Int, maxBits int, params *MontParamsStage4) *VRO
 	tM := len(params.BaseM.Moduli)
 	tN := len(params.BaseN.Moduli)
 
+	// Pre-encode identity element (1) — cached for zero-alloc runtime
+	rawOneM, rawOneN := ToVROOMEncodingStage4(big.NewInt(1), params)
+
 	pt := &VROOMPreTable{
 		tableM:  make([][]uint64, maxBits),
 		tableN:  make([][]uint64, maxBits),
+		oneM:    make([]uint64, tM),
+		oneN:    make([]uint64, tN),
 		maxBits: maxBits,
 		tM:      tM,
 		tN:      tN,
 	}
+	copy(pt.oneM, rawOneM)
+	copy(pt.oneN, rawOneN)
 
 	// table[0] = base^(2^0) = base in VROOM encoding
 	curM, curN := ToVROOMEncodingStage4(base, params)
@@ -90,9 +100,8 @@ func ModExpPrecomputed(exp *big.Int, pt *VROOMPreTable,
 	w *ModExpWorkspace, params *MontParamsStage4) {
 
 	if exp.Sign() == 0 {
-		oneM, oneN := ToVROOMEncodingStage4(big.NewInt(1), params)
-		copy(w.accM, oneM)
-		copy(w.accN, oneN)
+		copy(w.accM, pt.oneM)
+		copy(w.accN, pt.oneN)
 		return
 	}
 
@@ -101,10 +110,9 @@ func ModExpPrecomputed(exp *big.Int, pt *VROOMPreTable,
 		panic("modexp_precompute: exponent bit length exceeds table size")
 	}
 
-	// acc = 1 (VROOM encoded)
-	oneM, oneN := ToVROOMEncodingStage4(big.NewInt(1), params)
-	copy(w.accM, oneM)
-	copy(w.accN, oneN)
+	// acc = 1 (pre-encoded in table, zero allocations)
+	copy(w.accM, pt.oneM)
+	copy(w.accN, pt.oneN)
 
 	// Scan exponent LSB → MSB, multiply for each set bit
 	for i := 0; i < bitLen; i++ {
@@ -125,9 +133,8 @@ func ModExpPrecomputedConstTime(exp *big.Int, pt *VROOMPreTable,
 	w *ModExpWorkspace, params *MontParamsStage4) {
 
 	if exp.Sign() == 0 {
-		oneM, oneN := ToVROOMEncodingStage4(big.NewInt(1), params)
-		copy(w.accM, oneM)
-		copy(w.accN, oneN)
+		copy(w.accM, pt.oneM)
+		copy(w.accN, pt.oneN)
 		return
 	}
 
@@ -136,10 +143,9 @@ func ModExpPrecomputedConstTime(exp *big.Int, pt *VROOMPreTable,
 		panic("modexp_precompute: exponent bit length exceeds table size")
 	}
 
-	// acc = 1 (VROOM encoded)
-	oneM, oneN := ToVROOMEncodingStage4(big.NewInt(1), params)
-	copy(w.accM, oneM)
-	copy(w.accN, oneN)
+	// acc = 1 (pre-encoded in table, zero allocations)
+	copy(w.accM, pt.oneM)
+	copy(w.accN, pt.oneN)
 
 	// Process every bit position — always multiply, then select
 	for i := 0; i < bitLen; i++ {
