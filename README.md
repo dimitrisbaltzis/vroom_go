@@ -29,22 +29,22 @@ Measured on Intel Xeon Gold 6326 (Ice Lake) @ 2.90 GHz, single core, 1024-bit pr
 
 ### Modular multiplication (single `a · b mod p`)
 
-| Stage | ns/op | Speedup | Key change |
-|-------|-------|---------|------------|
-| Baseline (`math/big`) | ~50,000 | 1× | heap-allocated big.Int arithmetic |
-| Stage 1 (uint64) | ~15,000 | ~3× | native uint64 residues, zero allocations |
-| Stage 2 (matrix CRNS) | 5,671 | ~9× | matrix-vector CRNS, 192-bit k estimator |
-| Stage 3 (AVX512IFMA) | 1,750 | ~29× | VPMADD52 vectorized matvec |
-| **Stage 4** | **799** | **~63×** | register-resident kernel + Shoup/Barrett |
+| Stage                 | ns/op   | Speedup  | Key change                               |
+| --------------------- | ------- | -------- | ---------------------------------------- |
+| Baseline (`math/big`) | ~50,000 | 1×       | heap-allocated big.Int arithmetic        |
+| Stage 1 (uint64)      | ~15,000 | ~3×      | native uint64 residues, zero allocations |
+| Stage 2 (matrix CRNS) | 5,671   | ~9×      | matrix-vector CRNS, 192-bit k estimator  |
+| Stage 3 (AVX512IFMA)  | 1,750   | ~29×     | VPMADD52 vectorized matvec               |
+| **Stage 4**           | **799** | **~63×** | register-resident kernel + Shoup/Barrett |
 
 Stage 4 Apply breakdown (CRNS base change, 269 ns total):
 
-| Step | ns | What changed |
-|------|----|-------------|
-| Matvec kernel | 77 | 6 ZMM accumulators in registers, 1 kernel call instead of 63 |
-| Combine (Shoup+Barrett) | 75 | 2×MULQ replaces DIVQ (~35→10 cycles per lane) |
-| k estimation (192-bit) | 46 | unchanged |
-| Correction (Shoup) | 21 | precomputed quotients, single conditional subtract |
+| Step                    | ns  | What changed                                                 |
+| ----------------------- | --- | ------------------------------------------------------------ |
+| Matvec kernel           | 77  | 6 ZMM accumulators in registers, 1 kernel call instead of 63 |
+| Combine (Shoup+Barrett) | 75  | 2×MULQ replaces DIVQ (~35→10 cycles per lane)                |
+| k estimation (192-bit)  | 46  | unchanged                                                    |
+| Correction (Shoup)      | 21  | precomputed quotients, single conditional subtract           |
 
 Zero heap allocations, zero `math/big` in the hot path, constant-time execution.
 
@@ -54,19 +54,19 @@ Comparison with the paper's C++ implementation: ~1.6× slower (799 vs ~500 ns), 
 
 Three strategies, each building on the previous:
 
-| Benchmark | ns/op | allocs | B/op | Strategy |
-|-----------|-------|--------|------|----------|
-| **Precomputed 1024-bit exp** | **423,000** | **0** | **0** | precomputed table, ~512 VROOM muls |
-| Inner naive 1024-bit exp | 1,244,000 | 0 | 0 | square-and-multiply, ~1535 VROOM calls |
-| Inner CT 1024-bit exp | 1,684,000 | 0 | 0 | always square+multiply, +35% |
-| Inner RSA verify (e=65537) | 13,700 | 0 | 0 | 17 VROOM calls |
-| Full RSA verify (e=65537) | 67,800 | 451 | 36 KB | encode + 17 VROOM calls + decode |
-| Full 1024-bit exp | 1,303,000 | 451 | 36 KB | encode/decode adds ~59 μs |
-| `big.Int.Exp` (baseline) | 586,000 | 22 | 6 KB | windowed Montgomery, scalar |
-| VROOMStage4 mul 2048-bit | 1,587 | 0 | 0 | 1.66× faster than big.Int mul |
-| **Precomputed 2048-bit exp** | **1,669,000** | **0** | **0** | 2.1× faster than big.Int.Exp |
-| Inner naive 2048-bit exp | 4,948,000 | 0 | 0 | ~3071 VROOM calls |
-| big.Int.Exp 2048-bit | 3,533,000 | 22 | 12 KB | baseline |
+| Benchmark                    | ns/op         | allocs | B/op  | Strategy                               |
+| ---------------------------- | ------------- | ------ | ----- | -------------------------------------- |
+| **Precomputed 1024-bit exp** | **423,000**   | **0**  | **0** | precomputed table, ~512 VROOM muls     |
+| Inner naive 1024-bit exp     | 1,244,000     | 0      | 0     | square-and-multiply, ~1535 VROOM calls |
+| Inner CT 1024-bit exp        | 1,684,000     | 0      | 0     | always square+multiply, +35%           |
+| Inner RSA verify (e=65537)   | 13,700        | 0      | 0     | 17 VROOM calls                         |
+| Full RSA verify (e=65537)    | 67,800        | 451    | 36 KB | encode + 17 VROOM calls + decode       |
+| Full 1024-bit exp            | 1,303,000     | 451    | 36 KB | encode/decode adds ~59 μs              |
+| `big.Int.Exp` (baseline)     | 586,000       | 22     | 6 KB  | windowed Montgomery, scalar            |
+| VROOMStage4 mul 2048-bit     | 1,587         | 0      | 0     | 1.66× faster than big.Int mul          |
+| **Precomputed 2048-bit exp** | **1,669,000** | **0**  | **0** | 2.1× faster than big.Int.Exp           |
+| Inner naive 2048-bit exp     | 4,948,000     | 0      | 0     | ~3071 VROOM calls                      |
+| big.Int.Exp 2048-bit         | 3,533,000     | 22     | 12 KB | baseline                               |
 
 **Precomputed table (423 μs — 1.4× faster than `big.Int.Exp`):** Precompute `base^(2^i)` for every bit position `i` and store in VROOM form. At runtime, scan the exponent LSB→MSB and multiply only for set bits — no squaring at runtime, only ~512 multiplies for a random 1024-bit exponent. Precompute cost: 1023 squarings (~828 μs, one-time). Memory: ~360 KB. Amortizes after a single exponentiation — ideal when base/modulus are reused (RSA, DH, repeated signatures).
 
@@ -150,11 +150,11 @@ Mathematical basis: `base^exp = ∏ base^(2^i)` for each bit `i` where `exp` has
 
 **Three API levels:**
 
-| API | Use case | Allocations | Runtime VROOM calls |
-|-----|----------|-------------|---------------------|
-| `ModExpVROOM` | One-shot, convenience | 451 | ~1535 (naive) |
-| `ModExpInner` | Zero-alloc inner loop | 0 | ~1535 (naive) |
-| `ModExpPrecomputed` | Pre-built table, zero-alloc | 0 | ~512 (table lookup) |
+| API                 | Use case                    | Allocations | Runtime VROOM calls |
+| ------------------- | --------------------------- | ----------- | ------------------- |
+| `ModExpVROOM`       | One-shot, convenience       | 451         | ~1535 (naive)       |
+| `ModExpInner`       | Zero-alloc inner loop       | 0           | ~1535 (naive)       |
+| `ModExpPrecomputed` | Pre-built table, zero-alloc | 0           | ~512 (table lookup) |
 
 The precomputed table (`VROOMPreTable`) stores `base^(2^i)` in VROOM encoding with a pre-encoded identity element (1). The runtime path uses only `copy()` and `VROOMStage4` — zero allocations, zero `big.Int` in the hot path.
 
@@ -259,6 +259,9 @@ AVX512_TEST=1 go test -bench BenchmarkModExp -benchmem -count=3
 
 # Benchmarks — 2048-bit
 AVX512_TEST=1 go test -bench "Benchmark.*2048" -benchmem -count=3
+
+# Correctness tests — all bit sizes including 2048-bit
+AVX512_TEST=1 go test -v -run "TestModExp.*Random"
 ```
 
 Requires Go 1.22+ and AVX512IFMA hardware (Intel Ice Lake / Sapphire Rapids) or [Intel SDE](https://www.intel.com/content/www/us/en/developer/articles/tool/software-development-emulator.html) for the vectorized path.
@@ -271,43 +274,43 @@ Requires Go 1.22+ and AVX512IFMA hardware (Intel Ice Lake / Sapphire Rapids) or 
 
 **Multiplication pipeline (9,522 tests):**
 
-| Test | What it checks | Data points |
-|------|---------------|-------------|
-| TestMulmodShoup52 | Shoup multiply vs big.Int reference | 5,000 random |
-| TestBarrettReduce52 | Barrett reduce vs native modulo | 4,000 random |
-| TestMatvecAVX512_3g | 3-group kernel vs scalar reference | 48 values, deterministic |
-| TestMatvecAVX512_3g_Large | 3-group kernel, realistic 1024-bit | 48 values, random |
-| TestMatvecAVX512Gen | Generic kernel, 2 groups | 32 values, random |
-| TestMatvecAVX512_6g | 6-group kernel, 2048-bit | 96 values, random |
-| TestVROOMStage4 | Full pipeline, 5 prime sizes (64–1024 bit) | 150 multiplications |
-| TestVROOMStage4Chained | base^100 mod p, error accumulation | 99 chained, 256-bit |
-| TestVROOMStage4_1024Chained | base^50 mod p, 1024-bit | 49 chained |
+| Test                        | What it checks                             | Data points              |
+| --------------------------- | ------------------------------------------ | ------------------------ |
+| TestMulmodShoup52           | Shoup multiply vs big.Int reference        | 5,000 random             |
+| TestBarrettReduce52         | Barrett reduce vs native modulo            | 4,000 random             |
+| TestMatvecAVX512_3g         | 3-group kernel vs scalar reference         | 48 values, deterministic |
+| TestMatvecAVX512_3g_Large   | 3-group kernel, realistic 1024-bit         | 48 values, random        |
+| TestMatvecAVX512Gen         | Generic kernel, 2 groups                   | 32 values, random        |
+| TestMatvecAVX512_6g         | 6-group kernel, 2048-bit                   | 96 values, random        |
+| TestVROOMStage4             | Full pipeline, 5 prime sizes (64–1024 bit) | 150 multiplications      |
+| TestVROOMStage4Chained      | base^100 mod p, error accumulation         | 99 chained, 256-bit      |
+| TestVROOMStage4_1024Chained | base^50 mod p, 1024-bit                    | 49 chained               |
 
 **Naive modular exponentiation (270+ tests):**
 
-| Test | What it checks | Data points |
-|------|---------------|-------------|
-| TestModExpVROOM_Small | Deterministic small values (3¹³ mod 7) + 16-bit random prime | 2 |
-| TestModExpVROOM_EdgeCases | a⁰=1, a¹=a, a²=a·a, Fermat a^(p-1)=1 | 4 |
-| TestModExpVROOM_Random | Random (base, exp) vs big.Int.Exp, 5 prime sizes (64–1024 bit) | 100 (20×5) |
-| TestModExpVROOM_RSAPublicExponent | e=65537, 3 prime sizes (256–1024 bit) | 30 (10×3) |
-| TestModExpVROOMConstTime_Random | CT path vs big.Int.Exp, 5 prime sizes | 100 (20×5) |
-| TestModExpVROOMConstTime_MatchesNonConstTime | CT path = non-CT path, 512-bit | 30 |
-| TestModExpVROOMConstTime_Fermat | CT a^(p-1) mod p = 1, 256-bit | 10 |
+| Test                                         | What it checks                                                 | Data points |
+| -------------------------------------------- | -------------------------------------------------------------- | ----------- |
+| TestModExpVROOM_Small                        | Deterministic small values (3¹³ mod 7) + 16-bit random prime   | 2           |
+| TestModExpVROOM_EdgeCases                    | a⁰=1, a¹=a, a²=a·a, Fermat a^(p-1)=1                           | 4           |
+| TestModExpVROOM_Random                       | Random (base, exp) vs big.Int.Exp, 5 prime sizes (64–1024 bit) | 100 (20×5)  |
+| TestModExpVROOM_RSAPublicExponent            | e=65537, 3 prime sizes (256–1024 bit)                          | 30 (10×3)   |
+| TestModExpVROOMConstTime_Random              | CT path vs big.Int.Exp, 5 prime sizes                          | 100 (20×5)  |
+| TestModExpVROOMConstTime_MatchesNonConstTime | CT path = non-CT path, 512-bit                                 | 30          |
+| TestModExpVROOMConstTime_Fermat              | CT a^(p-1) mod p = 1, 256-bit                                  | 10          |
 
 **Precomputed-table exponentiation (390+ tests):**
 
-| Test | What it checks | Data points |
-|------|---------------|-------------|
-| TestModExpPrecomputed_Small | Deterministic small values (3¹³ mod 7), exp=0, exp=1 | 3 |
-| TestModExpPrecomputed_EdgeCases | a⁰=1, a¹=a, a²=a·a, Fermat a^(p-1)=1 | 4 |
-| TestModExpPrecomputed_Random | Random (base, exp) vs big.Int.Exp, 5 prime sizes (64–1024 bit) | 100 (20×5) |
-| TestModExpPrecomputed_MatchesNaive | Precomputed = naive ModExpVROOM, 512-bit | 30 |
-| TestModExpPrecomputed_RSAPublicExponent | e=65537, 3 prime sizes (256–1024 bit) | 30 (10×3) |
-| TestModExpPrecomputed_ReuseTable | 1 table, 50 different exponents, 512-bit | 50 |
-| TestModExpPrecomputedConstTime_Random | CT precomputed vs big.Int.Exp, 5 sizes | 100 (20×5) |
-| TestModExpPrecomputedConstTime_MatchesNonConstTime | CT = non-CT precomputed, 512-bit | 30 |
-| TestModExpPrecomputedConstTime_Fermat | CT precomputed Fermat test, 256-bit | 10 |
+| Test                                               | What it checks                                                 | Data points |
+| -------------------------------------------------- | -------------------------------------------------------------- | ----------- |
+| TestModExpPrecomputed_Small                        | Deterministic small values (3¹³ mod 7), exp=0, exp=1           | 3           |
+| TestModExpPrecomputed_EdgeCases                    | a⁰=1, a¹=a, a²=a·a, Fermat a^(p-1)=1                           | 4           |
+| TestModExpPrecomputed_Random                       | Random (base, exp) vs big.Int.Exp, 5 prime sizes (64–1024 bit) | 100 (20×5)  |
+| TestModExpPrecomputed_MatchesNaive                 | Precomputed = naive ModExpVROOM, 512-bit                       | 30          |
+| TestModExpPrecomputed_RSAPublicExponent            | e=65537, 3 prime sizes (256–1024 bit)                          | 30 (10×3)   |
+| TestModExpPrecomputed_ReuseTable                   | 1 table, 50 different exponents, 512-bit                       | 50          |
+| TestModExpPrecomputedConstTime_Random              | CT precomputed vs big.Int.Exp, 5 sizes                         | 100 (20×5)  |
+| TestModExpPrecomputedConstTime_MatchesNonConstTime | CT = non-CT precomputed, 512-bit                               | 30          |
+| TestModExpPrecomputedConstTime_Fermat              | CT precomputed Fermat test, 256-bit                            | 10          |
 
 Every exponentiation test compares against Go's `math/big.Int.Exp` as the reference oracle. The Fermat tests provide an independent mathematical invariant (a^(p-1) ≡ 1 mod p for prime p) that doesn't depend on any reference implementation.
 
@@ -315,32 +318,32 @@ Every exponentiation test compares against Go's `math/big.Int.Exp` as the refere
 
 **Multiplication:**
 
-| Benchmark | Iterations × 3 |
-|-----------|----------------|
-| BenchmarkVROOMStage4/1024-bit | ~4,500,000 |
-| BenchmarkApplyStage4_Parts/full_Apply | ~13,400,000 |
-| BenchmarkApplyStage4_Parts/step1_matvec | ~47,000,000 |
+| Benchmark                               | Iterations × 3 |
+| --------------------------------------- | -------------- |
+| BenchmarkVROOMStage4/1024-bit           | ~4,500,000     |
+| BenchmarkApplyStage4_Parts/full_Apply   | ~13,400,000    |
+| BenchmarkApplyStage4_Parts/step1_matvec | ~47,000,000    |
 
 **Exponentiation (naive):**
 
-| Benchmark | Iterations × 3 |
-|-----------|----------------|
-| BenchmarkModExpInner_RSAVerify_1024 | ~260,000 |
-| BenchmarkModExpInner_1024bit_exp | ~2,900 |
-| BenchmarkModExpInnerConstTime_1024bit_exp | ~2,100 |
-| BenchmarkModExpVROOM_RSAVerify_1024 | ~53,000 |
-| BenchmarkModExpVROOM_1024bit_exp | ~2,700 |
-| BenchmarkModExpVROOMConstTime_1024bit_exp | ~2,100 |
-| BenchmarkModExpBigInt_1024bit_exp (baseline) | ~6,000 |
+| Benchmark                                    | Iterations × 3 |
+| -------------------------------------------- | -------------- |
+| BenchmarkModExpInner_RSAVerify_1024          | ~260,000       |
+| BenchmarkModExpInner_1024bit_exp             | ~2,900         |
+| BenchmarkModExpInnerConstTime_1024bit_exp    | ~2,100         |
+| BenchmarkModExpVROOM_RSAVerify_1024          | ~53,000        |
+| BenchmarkModExpVROOM_1024bit_exp             | ~2,700         |
+| BenchmarkModExpVROOMConstTime_1024bit_exp    | ~2,100         |
+| BenchmarkModExpBigInt_1024bit_exp (baseline) | ~6,000         |
 
 **Exponentiation (precomputed table):**
 
-| Benchmark | Iterations × 3 |
-|-----------|----------------|
-| BenchmarkModExpPrecomputed_1024bit_exp | ~8,300 |
-| BenchmarkModExpPrecomputedConstTime_1024bit_exp | ~4,100 |
-| BenchmarkModExpPrecomputed_RSAVerify_1024 | ~166,000 |
-| BenchmarkNewVROOMPreTable_1024 (setup cost) | variable |
+| Benchmark                                       | Iterations × 3 |
+| ----------------------------------------------- | -------------- |
+| BenchmarkModExpPrecomputed_1024bit_exp          | ~8,300         |
+| BenchmarkModExpPrecomputedConstTime_1024bit_exp | ~4,100         |
+| BenchmarkModExpPrecomputed_RSAVerify_1024       | ~166,000       |
+| BenchmarkNewVROOMPreTable_1024 (setup cost)     | variable       |
 
 ---
 
