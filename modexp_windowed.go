@@ -206,9 +206,9 @@ func ModExpWindowedConstTime(exp *big.Int, wt *VROOMWindowTable,
 	copy(w.accM, wt.oneM)
 	copy(w.accN, wt.oneN)
 
-	// Temp buffer for the selected table entry
-	selM := make([]uint64, wt.tM)
-	selN := make([]uint64, wt.tN)
+	// Temp buffer for the selected table entry — pre-allocated in workspace
+	selM := w.selM
+	selN := w.selN
 
 	for win := 0; win < wt.numWindows; win++ {
 		digit := extractWindow(exp, win*windowK)

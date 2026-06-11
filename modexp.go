@@ -18,6 +18,7 @@ import (
 type ModExpWorkspace struct {
 	accM, accN []uint64 // current accumulator
 	sqM, sqN   []uint64 // saved square result (constant-time only)
+	selM, selN []uint64 // selected table entry (windowed constant-time only)
 	tM, tN     int
 }
 
@@ -30,6 +31,8 @@ func NewModExpWorkspace(params *MontParamsStage4) *ModExpWorkspace {
 		accN: make([]uint64, tN),
 		sqM:  make([]uint64, tM),
 		sqN:  make([]uint64, tN),
+		selM: make([]uint64, tM),
+		selN: make([]uint64, tN),
 		tM:   tM,
 		tN:   tN,
 	}
