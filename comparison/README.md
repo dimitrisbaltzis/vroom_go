@@ -1,0 +1,108 @@
+# VROOM vs jiajunxin/multiexp — Comparison Benchmarks
+
+Fair comparison of two modular exponentiation approaches on the same machine.
+
+## Background
+
+Both libraries compute `base^exp mod p` but with fundamentally different strategies:
+
+**VROOM** ([paper](https://github.com/SimonLangowski/VROOM)) decomposes large integers into small 52-bit residues (RNS representation) and uses AVX512IFMA SIMD instructions (`VPMADD52`) for 8-wide parallel multiply-accumulate. Single-threaded, but exploits instruction-level parallelism.
+
+**jiajunxin/multiexp** stays in classical Montgomery representation and exploits two things: thread-level parallelism (splits exponent words across goroutines) and GCW (Greatest Common Words — extracts common bits across multiple exponents to avoid redundant multiplications).
+
+They are **not directly iso** in all scenarios — see the notes below.
+
+---
+
+## Prerequisites
+
+**1. AVX512IFMA hardware** — required for VROOM:
+
+```bash
+grep -o 'avx512ifma' /proc/cpuinfo | head -1
+# Must output: avx512ifma
+```
+
+Intel Ice Lake+, Sapphire Rapids, or AMD Zen 4+. If empty → VROOM benchmarks will fail with illegal instruction.
+
+**2. Go 1.22+**
+
+```bash
+go version
+```
+
+**3. CPU info for your report:**
+
+```bash
+lscpu | grep "Model name"
+```
+
+---
+
+## Setup (one-time)
+
+```bash
+cd comparison/
+go mod tidy      # resolves jiajunxin/multiexp version
+go build ./...   # compile check — must produce no output
+go vet ./...     # static analysis
+```
+
+---
+
+## Run
+
+```bash
+# Step 1: Correctness — both must match big.Int.Exp (reference oracle)
+AVX512_TEST=1 go test -v -run TestCorrectness
+
+# Step 2: Benchmarks
+AVX512_TEST=1 go test -bench BenchmarkComparison \
+    -benchmem -benchtime 5s -count 3 | tee results.txt
+
+# Step 3: Statistical analysis
+go install golang.org/x/perf/cmd/benchstat@latest
+benchstat results.txt
+```
+
+---
+
+## What is compared
+
+| Scenario       | jiajunxin               | VROOM                     | Iso?                                                                                      |
+| -------------- | ----------------------- | ------------------------- | ----------------------------------------------------------------------------------------- |
+| **Precompute** | `NewPrecomputeTable`    | `NewVROOMWindowTable`     | ✓                                                                                         |
+| **Single exp** | `ExpParallel` (1T + NT) | `ModExpWindowed`          | Partial — see note 1                                                                      |
+| **Batch 100**  | 100× `ExpParallel`      | 100× `ModExpWindowed`     | ✓ amortized precompute                                                                    |
+| **Fourfold**   | `FourfoldExp` (GCW)     | 4× `ModExpWindowed`       | ✗ jiajunxin extracts common bits across 4 exponents (GCW), VROOM runs 4 independent calls |
+| **Double**     | `DoubleExp` (GCW)       | 2× `ModExpWindowed`       | ✗ same as above, for 2 exponents2                                                         |
+| **RSA verify** | `ExpParallel(e=65537)`  | `ModExpWindowed(e=65537)` | ✓                                                                                         |
+| **Baseline**   | —                       | `big.Int.Exp` (stdlib)    | reference                                                                                 |
+
+---
+
+## Important notes for interpreting results
+
+**Note 1 — Single exp, parallelism:**
+jiajunxin with N threads exploits multiple cores; VROOM is single-threaded but uses AVX512 SIMD (8 lanes). The benchmark runs jiajunxin at both 1T and NT so you can separate the two effects.
+
+**Note 2 — Fourfold/Double is not iso:**
+jiajunxin's `FourfoldExp` uses GCW to extract bits common across all 4 exponents and compute them once. VROOM has no native multi-exp — it runs 4 independent exponentiations. This gives jiajunxin a structural advantage in the fourfold scenario that is algorithmic, not just a hardware difference.
+
+**Note 3 — Montgomery vs RNS:**
+jiajunxin uses classical Montgomery (one large multi-word integer, scalar arithmetic). VROOM uses RNS (many small 52-bit residues, SIMD arithmetic). They have different constant factors and scale differently with bit size — check both 1024-bit and 2048-bit results.
+
+**Note 4 — When each wins:**
+
+- Single random exp, same base reused → likely VROOM (AVX512 + windowed table)
+- 4 exponents with same base, no hardware SIMD → likely jiajunxin (GCW)
+- RSA verify (e=65537, 17 multiplications) → likely VROOM (very few VROOM calls needed)
+- 2048-bit → check results, VROOM scales better per multiply but has more residues
+
+---
+
+## References
+
+- [VROOM paper (MIT)](https://github.com/SimonLangowski/VROOM) — Langowski, He, Devadas
+- [jiajunxin/multiexp](https://github.com/jiajunxin/multiexp)
+- [Posch & Posch 1995](https://ieeexplore.ieee.org/document/381846) — original RNS Montgomery

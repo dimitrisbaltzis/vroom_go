@@ -3,7 +3,7 @@
 // Pre-allocates all scratch buffers once at setup time.
 // VROOMStage2NoAlloc performs 0 heap allocations per multiplication.
 
-package main
+package vroom
 
 import (
 	"math/big"

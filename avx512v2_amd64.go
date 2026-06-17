@@ -1,4 +1,4 @@
-package main
+package vroom
 
 // avx512v2_amd64.go — Go stubs for Stage 4 AVX512IFMA assembly kernels.
 // These are implemented in avx512v2_amd64.s

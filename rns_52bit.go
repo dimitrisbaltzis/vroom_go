@@ -12,7 +12,7 @@
 // instruction which operates on 52-bit unsigned integers. The scalar
 // mulmod/addmod functions already handle 52-bit operands correctly.
 
-package main
+package vroom
 
 import (
 	"crypto/rand"

@@ -4,7 +4,7 @@
 //
 // This is a pure-Go reference implementation using math/big for clarity.
 // The real performance gains come from AVX512IFMA vectorization (see the paper).
-package main
+package vroom
 
 import (
 	"crypto/rand"

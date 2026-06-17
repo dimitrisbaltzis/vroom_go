@@ -18,7 +18,7 @@
 // Combined expected: Apply 719ns → ~260ns (2.7x per Apply)
 //                    VROOM 1750ns → ~700ns (2.5x)
 
-package main
+package vroom
 
 import (
 	"math/big"

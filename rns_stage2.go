@@ -7,7 +7,7 @@
 //
 // This is where most of the speedup comes from: CRNS was ~75% of runtime.
 
-package main
+package vroom
 
 import (
 	"math/big"

@@ -7,7 +7,7 @@
 //   ModExpVROOM / ModExpVROOMConstTime — convenience (encode + exp + decode)
 //   ModExpInner / ModExpInnerConstTime — zero-alloc inner loop (pre-encoded)
 
-package main
+package vroom
 
 import (
 	"math/big"

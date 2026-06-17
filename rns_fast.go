@@ -5,7 +5,7 @@
 // math/big is used only during setup (precomputation) and for CRNS base-change
 // (that is Stage 2).
 
-package main
+package vroom
 
 import (
 	"math/big"

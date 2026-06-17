@@ -17,7 +17,7 @@
 //   ModExpWindowed                — zero-alloc runtime, non-constant-time
 //   ModExpVROOMWindowed           — convenience wrapper (big.Int in/out)
 
-package main
+package vroom
 
 import (
 	"math/big"

@@ -1,4 +1,4 @@
-package main
+package vroom
 
 // avx512_amd64.go — Go stubs for AVX512IFMA assembly functions.
 // These are implemented in avx512_amd64.s

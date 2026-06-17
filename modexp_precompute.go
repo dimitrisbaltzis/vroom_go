@@ -16,7 +16,7 @@
 //   ModExpPrecomputed         — zero-alloc inner loop (pre-encoded result)
 //   ModExpVROOMPrecomputed    — convenience wrapper (big.Int in/out)
 
-package main
+package vroom
 
 import (
 	"math/big"

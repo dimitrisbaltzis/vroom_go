@@ -4,7 +4,7 @@
 // 8 target lanes per AVX512 instruction pair (VPMADD52LUQ + VPMADD52HUQ).
 // The O(t) parts (k estimation, correction, elementwise ops) remain scalar.
 
-package main
+package vroom
 
 import (
 	"math/big"
