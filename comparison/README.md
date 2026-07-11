@@ -101,6 +101,33 @@ jiajunxin uses classical Montgomery (one large multi-word integer, scalar arithm
 
 ---
 
+## Go 1.22+ compatibility
+
+jiajunxin/multiexp uses internal `math/big` symbols via assembly trampolines (`shrVU`, `divWW`, `mulWW`, `reciprocalWord`, `nlz`) that were removed in Go 1.22+. To fix this, the library was forked at `github.com/dimitrisbaltzis/multiexp`, the assembly files (`arith_*.s`, `arith_decl.go`) were removed, and replaced with pure Go implementations. The `go.mod` uses a `replace` directive to point to the fork.
+
+---
+
+## Results
+
+Measured on Intel Xeon Gold 6326 (Ice Lake) @ 2.90 GHz. Full analysis in [benchmark_analysis.md](benchmark_analysis.md).
+
+| Scenario | VROOM (ns/op) | jiajunxin 1T (ns/op) | jiajunxin 64T (ns/op) | Winner (single-thread) |
+|---|---|---|---|---|
+| Single exp 1024-bit | **198,000** | 541,000 | 167,000 | VROOM 2.7× faster than 1T |
+| Single exp 2048-bit | **787,000** | 4,598,000 | 663,000 | VROOM 5.8× faster than 1T |
+| Batch 100 × 1024-bit | **19,856,000** | 55,057,000 | — | VROOM 2.8× faster |
+| Batch 100 × 2048-bit | **78,446,000** | 428,547,000 | — | VROOM 5.5× faster |
+| Double 1024-bit | **393,000** | 1,904,000 | — | VROOM 4.8× faster |
+| Double 2048-bit | **1,563,000** | 15,068,000 | — | VROOM 9.6× faster |
+| Fourfold 1024-bit | 791,000 | 1,081,000 | **416,000** | jiajunxin 64T wins |
+| Fourfold 2048-bit | 3,126,000 | 8,241,000 | **2,476,000** | jiajunxin 64T marginally |
+| RSA verify 1024-bit | **4,615** | 12,579 | — | VROOM 2.7× faster |
+| RSA verify 2048-bit | **9,119** | 37,467 | — | VROOM 4.1× faster |
+
+VROOM wins in every single-thread scenario. The advantage grows with key size — from 2.7× at 1024-bit to 5.8× at 2048-bit for single exponentiation — consistent with AVX512+RNS parallelism becoming more valuable as the number of residues increases. The only scenario where jiajunxin wins is fourfold, where the combination of GCW and 64 threads compensates for the slower per-multiplication cost.
+
+---
+
 ## References
 
 - [VROOM paper (MIT)](https://github.com/SimonLangowski/VROOM) — Langowski, He, Devadas
