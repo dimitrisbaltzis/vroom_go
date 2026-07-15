@@ -333,19 +333,21 @@ func BenchmarkComparison(b *testing.B) {
 			}
 		})
 
-		// Double with GCW
+		gw := vroom.NewGCWWorkspace(vroomParams)
+
+		// Double με GCW
 		b.Run(fmt.Sprintf("%d/double/vroom_gcw", bits), func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				vroom.ModExpDoubleWindowed(e2[0], e2[1], vt, ws, vroomParams)
+				vroom.ModExpDoubleWindowed(e2[0], e2[1], vt, gw, vroomParams)
 			}
 		})
 
-		// Fourfold with GCW
+		// Fourfold με GCW
 		b.Run(fmt.Sprintf("%d/fourfold/vroom_gcw", bits), func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				vroom.ModExpFourfoldWindowed(e4, vt, vroomParams)
+				vroom.ModExpFourfoldWindowed(e4, vt, gw, vroomParams)
 			}
 		})
 	}
