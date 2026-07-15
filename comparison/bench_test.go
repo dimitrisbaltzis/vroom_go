@@ -332,5 +332,21 @@ func BenchmarkComparison(b *testing.B) {
 				new(big.Int).Exp(base, rsaE, p)
 			}
 		})
+
+		// Double with GCW
+		b.Run(fmt.Sprintf("%d/double/vroom_gcw", bits), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				vroom.ModExpDoubleWindowed(e2[0], e2[1], vt, ws, vroomParams)
+			}
+		})
+
+		// Fourfold with GCW
+		b.Run(fmt.Sprintf("%d/fourfold/vroom_gcw", bits), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				vroom.ModExpFourfoldWindowed(e4, vt, vroomParams)
+			}
+		})
 	}
 }
