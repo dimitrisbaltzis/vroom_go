@@ -74,7 +74,7 @@ benchstat results.txt
 | **Precompute** | `NewPrecomputeTable`    | `NewVROOMWindowTable`     | ✓                                                                                     |
 | **Single exp** | `ExpParallel` (1T + NT) | `ModExpWindowed`          | Partial — see note 1                                                                  |
 | **Batch 100**  | 100× `ExpParallel`      | 100× `ModExpWindowed`     | ✓ amortized precompute                                                                |
-| **Fourfold**   | `FourfoldExp` (GCW)     | 4× `ModExpWindowed`       | ✗ Notes extracts common bits across 4 exponents (GCW), VROOM runs 4 independent calls |
+| **Fourfold**   | `FourfoldExp` (GCW)     | 4× `ModExpWindowed`       | ✗ Notus extracts common bits across 4 exponents (GCW), VROOM runs 4 independent calls |
 | **Double**     | `DoubleExp` (GCW)       | 2× `ModExpWindowed`       | ✗ same as above, for 2 exponents2                                                     |
 | **RSA verify** | `ExpParallel(e=65537)`  | `ModExpWindowed(e=65537)` | ✓                                                                                     |
 | **Baseline**   | —                       | `big.Int.Exp` (stdlib)    | reference                                                                             |
@@ -111,20 +111,27 @@ jiajunxin/multiexp uses internal `math/big` symbols via assembly trampolines (`s
 
 Measured on Intel Xeon Gold 6326 (Ice Lake) @ 2.90 GHz. Full analysis in [benchmark_analysis.md](benchmark_analysis.md).
 
-| Scenario             | VROOM (ns/op)  | Notus 1T (ns/op) | Notus 64T (ns/op) | Winner (single-thread)    |
-| -------------------- | -------------- | ---------------- | ----------------- | ------------------------- |
-| Single exp 1024-bit  | **198,000**    | 541,000          | 167,000           | VROOM 2.7× faster than 1T |
-| Single exp 2048-bit  | **787,000**    | 4,598,000        | 663,000           | VROOM 5.8× faster than 1T |
-| Batch 100 × 1024-bit | **19,856,000** | 55,057,000       | —                 | VROOM 2.8× faster         |
-| Batch 100 × 2048-bit | **78,446,000** | 428,547,000      | —                 | VROOM 5.5× faster         |
-| Double 1024-bit      | **393,000**    | 1,904,000        | —                 | VROOM 4.8× faster         |
-| Double 2048-bit      | **1,563,000**  | 15,068,000       | —                 | VROOM 9.6× faster         |
-| Fourfold 1024-bit    | 791,000        | 1,081,000        | **416,000**       | Notus 64T wins            |
-| Fourfold 2048-bit    | 3,126,000      | 8,241,000        | **2,476,000**     | Notus 64T marginally      |
-| RSA verify 1024-bit  | **4,615**      | 12,579           | —                 | VROOM 2.7× faster         |
-| RSA verify 2048-bit  | **9,119**      | 37,467           | —                 | VROOM 4.1× faster         |
+| Scenario                 | VROOM (ns/op)   | Notus 1T (ns/op) | Notus 64T (ns/op) | Winner (single-thread)        |
+| ------------------------ | --------------- | ---------------- | ----------------- | ----------------------------- |
+| Single exp 1024-bit      | **198,000**     | 541,000          | 167,000           | VROOM 2.7× faster than 1T     |
+| Single exp 2048-bit      | **787,000**     | 4,598,000        | 663,000           | VROOM 5.8× faster than 1T     |
+| **Single exp 3072-bit**  | **2,813,000**   | 15,747,000       | 1,468,000         | **VROOM 5.6× faster than 1T** |
+| Batch 100 × 1024-bit     | **19,856,000**  | 55,057,000       | —                 | VROOM 2.8× faster             |
+| Batch 100 × 2048-bit     | **78,446,000**  | 428,547,000      | —                 | VROOM 5.5× faster             |
+| **Batch 100 × 3072-bit** | **283,411,000** | 1,600,781,000    | —                 | **VROOM 5.7× faster**         |
+| Double 1024-bit          | **393,000**     | 1,904,000        | —                 | VROOM 4.8× faster             |
+| Double 2048-bit          | **1,563,000**   | 15,068,000       | —                 | VROOM 9.6× faster             |
+| **Double 3072-bit**      | **5,730,000**   | 56,234,000       | —                 | **VROOM 9.8× faster**         |
+| Fourfold 1024-bit        | 791,000         | 1,081,000        | **416,000**       | Notus 64T wins                |
+| Fourfold 2048-bit        | 3,126,000       | 8,241,000        | **2,476,000**     | Notus 64T marginally          |
+| **Fourfold 3072-bit**    | 11,377,000      | 30,414,000       | **8,268,000**     | **Notus 64T 1.4× only**       |
+| RSA verify 1024-bit      | **4,615**       | 12,579           | —                 | VROOM 2.7× faster             |
+| RSA verify 2048-bit      | **9,119**       | 37,467           | —                 | VROOM 4.1× faster             |
+| **RSA verify 3072-bit**  | **17,011**      | 80,541           | —                 | **VROOM 4.7× faster**         |
 
-VROOM wins in every single-thread scenario. The advantage grows with key size — from 2.7× at 1024-bit to 5.8× at 2048-bit for single exponentiation — consistent with AVX512+RNS parallelism becoming more valuable as the number of residues increases. The only scenario where Notus wins is fourfold, where the combination of GCW and 64 threads compensates for the slower per-multiplication cost.
+VROOM wins in every single-thread scenario across all bit sizes. The advantage is most pronounced at RSA-3072: **5.6× faster** for single exponentiation, **9.8× faster** for double, and **4.7× faster** for RSA verify — all with zero heap allocations.
+
+The only scenario where Notus wins is fourfold with 64 threads, combining GCW and thread-level parallelism. However, the gap narrows with key size: from 1.9× at 1024-bit to **1.4× at 3072-bit**, where Notus needs 64 cores to achieve a diminishing advantage over VROOM's single thread.
 
 ---
 
